@@ -1,6 +1,11 @@
-import { StateGraph } from "@langchain/langgraph";
+import { END, StateGraph } from "@langchain/langgraph";
 import { StateAnnotation } from "./state";
 import { model } from "./model";
+import { ToolNode } from "@langchain/langgraph/prebuilt";
+import { getOffers } from "./tools";
+
+const marketingTools = [getOffers];
+const marketingToolNode = new ToolNode(marketingTools);
 
 async function frontDeskSupport(state: typeof StateAnnotation.State) {
   const SYSTEM_PROMPT = `You are frontline support staff for Saim\'s Tech, an ed-tech company that helps software developers excel in their careers through Software Engineering courses. Be concise in your responses.
@@ -43,9 +48,29 @@ async function frontDeskSupport(state: typeof StateAnnotation.State) {
   };
 }
 
-function marketingSupport(state: typeof StateAnnotation.State) {
+async function marketingSupport(state: typeof StateAnnotation.State) {
   console.log("handling by marketing team");
-  return state;
+  const llmWithTools = model.bindTools(marketingTools);
+  const SYSTEM_PROMPT = `You are part of the Marketing Team at Coder's Gyan, an ed-tech company that helps software developers excel in their careers through practical web development and Generative AI courses.
+  You specialize in handling questions about promo codes, discounts, offers, and special campaigns.
+  Answer clearly, concisely, and in a friendly manner. For queries outside promotions (course content, learning), politely redirect the student to the correct team.
+  Important: Answer only using given context, else say I don't have enough information about it.`;
+
+  let trimmedHistory = state.messages;
+
+  if (trimmedHistory.at(-1)?.getType() === "ai") {
+    trimmedHistory = trimmedHistory.slice(0, -1);
+  }
+
+  const marketingResponse = await llmWithTools.invoke([
+    {
+      role: "system",
+      content: SYSTEM_PROMPT,
+    },
+    ...trimmedHistory,
+  ]);
+
+  return { messages: [marketingResponse] };
 }
 
 function learningSupport(state: typeof StateAnnotation.State) {
@@ -60,20 +85,35 @@ function whoIsNext(state: typeof StateAnnotation.State) {
     return "learningSupport";
   } else if (state.nextRepresentative.includes("RESPOND")) {
     return "__end__";
+  } else return "__end__";
+}
+
+function isMarketingTool(state: typeof StateAnnotation.State) {
+  const lastMessage = state.messages[state.messages.length - 1];
+
+  if (lastMessage.tool_calls.length) {
+    return "marketingTools";
   }
+  return "__end__";
 }
 
 const graph = new StateGraph(StateAnnotation)
   .addNode("frontDeskSupport", frontDeskSupport)
   .addNode("marketingSupport", marketingSupport)
   .addNode("learningSupport", learningSupport)
+  .addNode("marketingTools", marketingToolNode)
   .addEdge("__start__", "frontDeskSupport")
+  .addEdge("marketingTools", "marketingSupport")
   .addEdge("marketingSupport", "__end__")
   .addEdge("learningSupport", "__end__")
   .addConditionalEdges("frontDeskSupport", whoIsNext, {
     marketingSupport: "marketingSupport",
     learningSupport: "learningSupport",
     __end__: "__end__",
+  })
+  .addConditionalEdges("marketingSupport", isMarketingTool, {
+    marketingTools: "marketingTools",
+    __end__: END,
   });
 
 const app = graph.compile();
@@ -88,12 +128,11 @@ async function main() {
     ],
   });
 
-  for await (const value of stream){
-    console.log("---STEP---")
-    console.log(value)
-    console.log("---STEP---")
-
+  for await (const value of stream) {
+    console.log("---STEP---");
+    console.log(value);
+    console.log("---STEP---");
   }
 }
 
-main()
+main();
