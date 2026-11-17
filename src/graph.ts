@@ -2,10 +2,12 @@ import { END, StateGraph } from "@langchain/langgraph";
 import { StateAnnotation } from "./state";
 import { model } from "./model";
 import { ToolNode } from "@langchain/langgraph/prebuilt";
-import { getOffers } from "./tools";
+import { getOffers, knowledgeRetrieverTool } from "./tools";
 
 const marketingTools = [getOffers];
+const learningTools = [knowledgeRetrieverTool];
 const marketingToolNode = new ToolNode(marketingTools);
+const learningToolNode = new ToolNode(learningTools);
 
 async function frontDeskSupport(state: typeof StateAnnotation.State) {
   const SYSTEM_PROMPT = `You are frontline support staff for Saim\'s Tech, an ed-tech company that helps software developers excel in their careers through Software Engineering courses. Be concise in your responses.
@@ -73,9 +75,28 @@ async function marketingSupport(state: typeof StateAnnotation.State) {
   return { messages: [marketingResponse] };
 }
 
-function learningSupport(state: typeof StateAnnotation.State) {
-  console.log("handling by marketing team");
-  return state;
+async function learningSupport(state: typeof StateAnnotation.State) {
+  const SYSTEM_PROMPT = `You are part of the Learning Support Team at Coder's Gyan, an ed-tech company that helps software developers excel in their careers through practical web development and Generative AI courses.
+  You assist students with questions about available courses, syllabus coverage, learning paths, and study strategies. Keep your answers concise, clear, and supportive. Strictly use information from retrieved context for answering queries. If the query is about learning issues, politely redirect the student to the respective team.
+  Important: Call retrieve_learning_knowledge_base max 3 times if the tool result is not relevant to original query.`;
+
+  let trimmedHistory = state.messages;
+
+  if (trimmedHistory.at(-1)?.getType() === "ai") {
+    trimmedHistory = trimmedHistory.slice(0, -1);
+  }
+
+  let llmWithTools = model.bindTools(learningTools);
+
+  const learningResponse = await llmWithTools.invoke([
+    {
+      role: "system",
+      content: SYSTEM_PROMPT,
+    },
+    ...trimmedHistory,
+  ]);
+
+  return { messages: [learningResponse] };
 }
 
 function whoIsNext(state: typeof StateAnnotation.State) {
@@ -97,15 +118,25 @@ function isMarketingTool(state: typeof StateAnnotation.State) {
   return "__end__";
 }
 
+function isLearningTool(state: typeof StateAnnotation.State) {
+  const lastMessage = state.messages[state.messages.length - 1];
+
+  if (lastMessage.tool_calls.length) {
+    return "learningTools";
+  }
+  return "__end__";
+}
+
 const graph = new StateGraph(StateAnnotation)
   .addNode("frontDeskSupport", frontDeskSupport)
   .addNode("marketingSupport", marketingSupport)
   .addNode("learningSupport", learningSupport)
   .addNode("marketingTools", marketingToolNode)
+  .addNode("learningTools", learningToolNode)
   .addEdge("__start__", "frontDeskSupport")
   .addEdge("marketingTools", "marketingSupport")
+  .addEdge("learningTools", "learningSupport")
   .addEdge("marketingSupport", "__end__")
-  .addEdge("learningSupport", "__end__")
   .addConditionalEdges("frontDeskSupport", whoIsNext, {
     marketingSupport: "marketingSupport",
     learningSupport: "learningSupport",
@@ -113,6 +144,10 @@ const graph = new StateGraph(StateAnnotation)
   })
   .addConditionalEdges("marketingSupport", isMarketingTool, {
     marketingTools: "marketingTools",
+    __end__: END,
+  })
+  .addConditionalEdges("learningSupport", isLearningTool, {
+    learningTools: "learningTools",
     __end__: END,
   });
 
@@ -123,7 +158,7 @@ async function main() {
     messages: [
       {
         role: "user",
-        content: "i have 1 year experience, which course do you recommend ?",
+        content: "how can I do relational database mastery ?",
       },
     ],
   });
