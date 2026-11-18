@@ -1,8 +1,9 @@
-import { END, StateGraph } from "@langchain/langgraph";
+import { END, MemorySaver, StateGraph } from "@langchain/langgraph";
 import { StateAnnotation } from "./state";
 import { model } from "./model";
 import { ToolNode } from "@langchain/langgraph/prebuilt";
 import { getOffers, knowledgeRetrieverTool } from "./tools";
+import readline from "node:readline/promises";
 
 const marketingTools = [getOffers];
 const learningTools = [knowledgeRetrieverTool];
@@ -151,23 +152,36 @@ const graph = new StateGraph(StateAnnotation)
     __end__: END,
   });
 
-const app = graph.compile();
+const app = graph.compile({ checkpointer: new MemorySaver() });
 
 async function main() {
-  const stream = await app.stream({
-    messages: [
-      {
-        role: "user",
-        content: "how can I do relational database mastery ?",
-      },
-    ],
+  const rl = readline.createInterface({
+    input: process.stdin,
+    output: process.stdout,
   });
 
-  for await (const value of stream) {
-    console.log("---STEP---");
-    console.log(value);
-    console.log("---STEP---");
+  while (true) {
+    const query = await rl.question("You: ")
+    if(query === 'exit') break;
+    const state = await app.invoke(
+      {
+        messages: [
+          {
+            role: "user",
+            content: query
+          },
+        ],
+      },
+      { configurable: { thread_id: "1" } },
+    );
+
+    console.log(
+      "Assistant: ",
+      state.messages[state.messages.length - 1].content,
+    );
+
   }
+  rl.close();
 }
 
 main();
